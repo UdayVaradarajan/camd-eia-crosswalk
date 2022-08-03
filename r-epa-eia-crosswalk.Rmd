@@ -83,15 +83,29 @@ library(readxl) # Read data from xlsx files via read_excel()
 library(openxlsx) # Create and write to formatted xlsx documents
 
 library(purrr) # Use of partial and map functions
+library(arrow) # Create and write parquets for efficient columnar storage of data
+library(dplyr) 
+library(broom) 
+
 ```
 
 ## Assign key values for data retrieval
 ```{r}
+# User inputs for crosswalk creation or update
 # API key for FACT API
-api_key <- "YOUR_API_KEY"
-eia_860_year <- 2018 # The  EIA data year (available at https://www.eia.gov/electricity/data/eia860/)
-earliest_retirement_year <- 2010 # All units retired before this year are filtered out of the data
-eia_data_file <- str_glue("https://www.eia.gov/electricity/data/eia860/archive/xls/eia860{eia_860_year}.zip")
+api_key <- "2B5IYc5NberaV02XHqMY0rJQg3Gh8C4miHNk7r04"
+eia_860_Early_Release <- "Yes" # Input "Yes" if early release EIA-860 data should be used
+eia_860_year_num <- 2021 # The EIA data year in numeric format (data available at https://www.eia.gov/electricity/data/eia860/)
+earliest_retirement_year <- 2008 # All units retired before this year are filtered out of the data
+current_EIA_860M_month <- "june" # Most recent month in lower-case used to pull EIA-860M
+current_year <- 2022 # Current year used to pull EIA-860
+refresh_CAMD_data <- "Yes" # Input "Yes" here if CAMD data should be downloaded and refreshed, "No" if data has already been downloaded
+refresh_EIA_data <- "Yes" # Input "Yes" here if EIA data should be downloaded and refreshed, "No" if data has already been downloaded
+
+eia_860_year_file_name <- paste(eia_860_year_num,ifelse(eia_860_Early_Release=="Yes","ER",""),sep="") # The EIA data year for the 860 data zip file
+eia_860_year <- paste(eia_860_year_num,ifelse(eia_860_Early_Release=="Yes","Early_Release",""),sep="_") # The EIA data year used in ER files
+eia_860m_data_file <- str_glue("https://www.eia.gov/electricity/data/eia860m/xls/{current_EIA_860M_month}_generator{current_year}.xlsx")
+eia_data_file <- str_glue("https://www.eia.gov/electricity/data/eia860/xls/eia860{eia_860_year_file_name}.zip")
 egrid_data_file <- "https://www.epa.gov/sites/production/files/2020-09/epa-eia_plant_id_crosswalk.xlsx"
 ```
 
@@ -102,98 +116,106 @@ if (api_key == "YOUR_API_KEY") {
   stop("You must provide a FACT API key")
 }
 
-response <-
-  GET(str_glue(
-    "https://api.epa.gov/FACT/1.0/facilities?api_key={api_key}"
-  ))
+# If you wish to refresh CAMD data, then change this flag to "Yes"
+camd_data_name = "data/camd_unit.parquet"
 
-# If something is wrong with the request, fail gracefully
-stop_for_status(response, content(response)$error$message)
 
-camd_plants_json <- content(response, as = "text") %>%
-  enter_object("data") # Top level json object that is an array of all the plants/oris
+if (refresh_CAMD_data=="Yes" ) {
+  response <-
+    GET(str_glue(
+      "https://api.epa.gov/FACT/1.0/facilities?api_key={api_key}"
+    ))
+  
+  # If something is wrong with the request, fail gracefully
+  stop_for_status(response, content(response)$error$message)
+  
+  camd_plants_json <- content(response, as = "text") %>%
+    enter_object("data") # Top level json object that is an array of all the plants/oris
+  camd_plants <- camd_plants_json %>%
+    gather_array() %>%
+    spread_all()
 
-camd_plants <- camd_plants_json %>%
-  gather_array() %>%
-  spread_all()
-
-camd_combustion_units <- camd_plants %>%
+  camd_combustion_units <- camd_plants %>%
   enter_object("units") %>%
   gather_array() %>%
   spread_all()
 
-# Filter CAMD data to filter out units that started operating after EIA data year
-# Filter out units that retired before earliest_retirement_year value
-camd_combustion_units <- camd_combustion_units %>%
-  filter((status == "OPR" &
-    ymd(as.Date(statusDate)) <= str_glue("{eia_860_year}-12-31")) |
-    (status %in% c("RET", "LTCS") &
-      ymd(as.Date(statusDate)) >= str_glue("{earliest_retirement_year}-01-01")))
-
-# Get the unit and generator IDs
-camd_generators <- camd_combustion_units %>%
-  enter_object("generators") %>%
-  gather_array() %>%
-  spread_all() %>%
-  select(
-    orisCode,
-    unitId,
-    generatorId,
-    nameplateCapacity
-  ) %>%
-  as_tibble()
-
-# Get the primary fuel description for each unit
-camd_fuels <- camd_combustion_units %>%
-  enter_object("fuels") %>%
-  gather_array() %>%
-  spread_all() %>%
-  subset(indicatorDescription == "Primary") %>%
-  select(
-    orisCode,
-    unitId,
-    fuelDesc
-  ) %>%
-  as_tibble()
-
-# Joining unit and generator ID with fuel into a complete units table
-camd_unit <- camd_combustion_units %>%
-  as_tibble() %>%
-  left_join(camd_generators,
-    by = c("orisCode", "unitId")
-  ) %>%
-  left_join(camd_fuels,
-    by = c("orisCode", "unitId")
-  ) %>%
-  select(
-    CAMD_PLANT_ID = "orisCode",
-    CAMD_FACILITY_NAME = "name",
-    CAMD_STATE = state.abbrev,
-    CAMD_LATITUDE = geographicLocation.latitude,
-    CAMD_LONGITUDE = geographicLocation.longitude,
-    CAMD_UNIT_ID = "unitId",
-    MOD_CAMD_UNIT_ID = "unitId",
-    CAMD_FUEL_TYPE = "fuelDesc",
-    CAMD_GENERATOR_ID = "generatorId",
-    MOD_CAMD_GENERATOR_ID = "generatorId",
-    CAMD_NAMEPLATE_CAPACITY = "nameplateCapacity",
-    CAMD_STATUS = "status",
-    CAMD_STATUS_DATE = "statusDate"
-  ) %>%
-  mutate(CAMD_RETIRE_YEAR = ifelse(CAMD_STATUS != "OPR", year(ymd(
-    as.Date(CAMD_STATUS_DATE)
-  )), 0)) %>%
-  arrange(CAMD_PLANT_ID, CAMD_UNIT_ID)
-
-# Clean up
-rm(camd_plants_json)
-rm(camd_plants)
-rm(camd_fuels)
-rm(camd_generators)
-rm(camd_combustion_units)
-rm(response)
-
-camd_unit
+  # Filter CAMD data to filter out units that started operating after EIA data year
+  # Filter out units that retired before earliest_retirement_year value
+  camd_combustion_units <- camd_combustion_units %>%
+    filter((status == "OPR" &
+      ymd(as.Date(statusDate)) <= str_glue("{eia_860_year_num}-12-31")) |
+      (status %in% c("RET", "LTCS") &
+        ymd(as.Date(statusDate)) >= str_glue("{earliest_retirement_year}-01-01")))
+  
+  # Get the unit and generator IDs
+  camd_generators <- camd_combustion_units %>%
+    enter_object("generators") %>%
+    gather_array() %>%
+    spread_all() %>%
+    select(
+      orisCode,
+      unitId,
+      generatorId,
+      nameplateCapacity
+    ) %>%
+    as_tibble()
+  
+  # Get the primary fuel description for each unit
+  camd_fuels <- camd_combustion_units %>%
+    enter_object("fuels") %>%
+    gather_array() %>%
+    spread_all() %>%
+    subset(indicatorDescription == "Primary") %>%
+    select(
+      orisCode,
+      unitId,
+      fuelDesc
+    ) %>%
+    as_tibble()
+  
+  # Joining unit and generator ID with fuel into a complete units table
+  camd_unit <- camd_combustion_units %>%
+    as_tibble() %>%
+    left_join(camd_generators,
+      by = c("orisCode", "unitId")
+    ) %>%
+    left_join(camd_fuels,
+      by = c("orisCode", "unitId")
+    ) %>%
+    select(
+      CAMD_PLANT_ID = "orisCode",
+      CAMD_FACILITY_NAME = "name",
+      CAMD_STATE = state.abbrev,
+      CAMD_LATITUDE = geographicLocation.latitude,
+      CAMD_LONGITUDE = geographicLocation.longitude,
+      CAMD_UNIT_ID = "unitId",
+      MOD_CAMD_UNIT_ID = "unitId",
+      CAMD_FUEL_TYPE = "fuelDesc",
+      CAMD_GENERATOR_ID = "generatorId",
+      MOD_CAMD_GENERATOR_ID = "generatorId",
+      CAMD_NAMEPLATE_CAPACITY = "nameplateCapacity",
+      CAMD_STATUS = "status",
+      CAMD_STATUS_DATE = "statusDate"
+    ) %>%
+    mutate(CAMD_RETIRE_YEAR = ifelse(CAMD_STATUS != "OPR", year(ymd(
+      as.Date(CAMD_STATUS_DATE)
+    )), 0)) %>%
+    arrange(CAMD_PLANT_ID, CAMD_UNIT_ID)
+  
+  # Clean up
+  rm(camd_plants_json)
+  rm(camd_plants)
+  rm(camd_fuels)
+  rm(camd_generators)
+  rm(camd_combustion_units)
+  rm(response)
+  
+  camd_data_name = "data/camd_unit.parquet"
+  write_parquet(camd_unit, camd_data_name)
+} else {
+  camd_unit <- read_parquet(camd_data_name)
+}
 ```
 
 ## Import EIA data
@@ -201,12 +223,14 @@ This section downloads and imports data from EIA-860 for the year specified abov
 ```{r, echo = TRUE}
 # Import plant, generator, and boiler (EnviroAssoc) data from EIA-860 using data year specified in eia_860_year
 
-download.file(
-  eia_data_file,
-  str_glue("data/eia860{eia_860_year}.zip")
-)
-
-unzip(zipfile = str_glue("data/eia860{eia_860_year}.zip"), exdir = "data")
+if(refresh_EIA_data == "Yes") {
+  download.file(
+    eia_data_file,
+    str_glue("data/eia860{eia_860_year_file_name}.zip")
+  )
+  unzip(zipfile = str_glue("data/eia860{eia_860_year_file_name}.zip"), exdir = "data")
+  download.file(eia_860m_data_file,"data/eia860m.xlsx")
+}
 
 # Get plant location data
 eia_plant <-
@@ -214,7 +238,7 @@ eia_plant <-
     str_glue("data/2___Plant_Y{eia_860_year}.xlsx"),
     sheet = "Plant",
     range = cell_cols("C:K"),
-    skip = 1,
+    skip = ifelse(eia_860_Early_Release=="Yes",2,1),
     trim_ws = TRUE
   ) %>%
   select(
@@ -229,7 +253,7 @@ eia_boiler <-
     str_glue("data/6_1_EnviroAssoc_Y{eia_860_year}.xlsx"),
     sheet = "Boiler Generator",
     range = cell_cols("C:F"),
-    skip = 1,
+    skip = ifelse(eia_860_Early_Release=="Yes",2,1),
     trim_ws = TRUE
   ) %>%
   select(
@@ -241,49 +265,97 @@ eia_boiler <-
   ) %>%
   inner_join(eia_plant, by = c("EIA_PLANT_ID"))
 
+drops_gen <- c(
+  "Planned Retirement Year",
+  "Planned Retirement Month",
+  "Status",
+  "Nameplate Energy Capacity (MWh)",
+  "DC Net Capacity (MW)",
+  "Planned Derate Year",
+  "Planned Derate Month",
+  "Planned Derate of Summer Capacity (MW)",
+  "Planned Uprate Year",
+  "Planned Uprate Month",
+  "Planned Uprate of Summer Capacity (MW)"
+  #"Latitude",
+  #"Longitude"
+)
+
+drops_ret <- c(
+  #"Retirement Month",
+  "Nameplate Energy Capacity (MWh)",
+  "DC Net Capacity (MW)"
+  #"Latitude",
+  #"Longitude"
+)
+
 # Create a consolidated list of all units (retired and operating)
 eia_gen_opr <- # Operating units
   read_excel(
-    str_glue("data/3_1_Generator_Y{eia_860_year}.xlsx"),
-    sheet = "Operable",
-    range = cell_cols("C:AH"),
-    skip = 1,
+    "data/eia860m.xlsx",
+    sheet = "Operating",
+    skip = 2,
     trim_ws = TRUE
   ) %>%
-  select(-"Planned Retirement Month", -"Planned Retirement Year") %>%
-  mutate("Retirement Year" = 0)
+  mutate(
+    "Retirement Year" = `Planned Retirement Year`,
+    "Retirement Month" = `Planned Retirement Month`
+    ) %>%
+  select(-drops_gen) 
+
+#eia_gen_opr <- # Operating units
+#  read_excel(
+#    str_glue("data/3_1_Generator_Y{eia_860_year}.xlsx"),
+#    sheet = "Operable",
+#    range = cell_cols("C:AH"),
+#    skip = 2,
+#    trim_ws = TRUE
+#  ) %>%
+#  select(-"Planned Retirement Month", -"Planned Retirement Year") %>%
+#  mutate("Retirement Year" = 0)
 
 eia_gen_ret <- # Retired units
   read_excel(
-    str_glue("data/3_1_Generator_Y{eia_860_year}.xlsx"),
-    sheet = "Retired and Canceled",
-    range = cell_cols("C:AH"),
-    skip = 1,
+    #str_glue("data/3_1_Generator_Y{eia_860_year}.xlsx"),
+    "data/eia860m.xlsx",
+    #sheet = "Retired and Canceled",
+    sheet = "Retired",
+    #range = cell_cols("C:AH"),
+    skip = 2,
     trim_ws = TRUE
   ) %>%
-  select(-"Retirement Month") %>%
-  relocate("Retirement Year", .after = "Energy Source 1") %>%
+  select(-drops_ret) %>%
+  #relocate("Retirement Year", .after = "Energy Source 1") %>%
   filter(`Retirement Year` >= earliest_retirement_year)
 
 eia_generator <- rbind(eia_gen_opr, eia_gen_ret) %>%
   select(
-    EIA_PLANT_ID = "Plant Code",
+    #EIA_PLANT_ID = "Plant Code",
+    EIA_PLANT_ID = "Plant ID",
     EIA_PLANT_NAME = "Plant Name",
-    EIA_STATE = "State",
+    #EIA_STATE = "State",
+    EIA_STATE = "Plant State",
     EIA_GENERATOR_ID = "Generator ID",
     MOD_EIA_GENERATOR_ID = "Generator ID",
-    EIA_UNIT_TYPE = "Prime Mover",
+    #EIA_UNIT_TYPE = "Prime Mover",
+    EIA_UNIT_TYPE = "Prime Mover Code",
     EIA_NAMEPLATE_CAPACITY = "Nameplate Capacity (MW)",
-    EIA_FUEL_TYPE = "Energy Source 1",
-    EIA_RETIRE_YEAR = "Retirement Year"
+    #EIA_FUEL_TYPE = "Energy Source 1",
+    EIA_FUEL_TYPE = "Energy Source Code",
+    EIA_LATITUDE = "Latitude",
+    EIA_LONGITUDE = "Longitude",
+    EIA_OPERATING_YEAR = "Operating Year",
+    EIA_OPERATING_MONTH = "Operating Month",
+    EIA_RETIRE_YEAR = "Retirement Year",
+    EIA_RETIRE_MONTH = "Retirement Month"
   ) %>%
   # Filter out renewable unit types https://www.epa.gov/sites/production/files/2017-01/egrid_code_lookup.xlsx
   filter(!(EIA_UNIT_TYPE %in% c("BA", "CE", "CP", "FC", "FW", "HA", "HY", "PS", "PV", "WS", "WT")))
 
 
 # Add lat and long
-eia_generator <- eia_generator %>%
-  inner_join(eia_plant, by = c("EIA_PLANT_ID"))
+#eia_generator <- eia_generator %>%
+#  inner_join(eia_plant, by = c("EIA_PLANT_ID"))
 
 # Clean up
 rm(eia_gen_opr)
@@ -627,7 +699,7 @@ CAMD_GENERATOR_ID = EIA_GENERATOR_ID
 
 ## Step 1: Match CAMD to EIA 3_1_Generator data set (retired and operational generators)
 ```{r}
-generator_step_string <- "3_1_Generator (generators) match on plant and gen IDs  Step 1"
+generator_step_string <- "Generator match on plant and gen IDs  Step 1"
 
 camd_eia_gen_crosswalk <-
   get_manual_matches(
@@ -827,7 +899,9 @@ camd_eia_crosswalk <- camd_eia_gen_crosswalk %>%
       )
   ) %>%
   mutate(
-    SEQUENCE_NUMBER = row_number()
+    SEQUENCE_NUMBER = row_number(),
+    EIA_RETIRE_MONTH = ifelse(is.na(EIA_RETIRE_MONTH),0,EIA_RETIRE_MONTH),
+    EIA_RETIRE_YEAR = ifelse(is.na(EIA_RETIRE_YEAR),0,EIA_RETIRE_YEAR)
   ) %>%
   select(
     SEQUENCE_NUMBER,
@@ -855,6 +929,9 @@ camd_eia_crosswalk <- camd_eia_gen_crosswalk %>%
     EIA_FUEL_TYPE,
     EIA_LATITUDE,
     EIA_LONGITUDE,
+    EIA_OPERATING_MONTH,
+    EIA_OPERATING_YEAR,
+    EIA_RETIRE_MONTH,
     EIA_RETIRE_YEAR,
     PLANT_ID_CHANGE_FLAG,
     MOD_EIA_PLANT_ID,
@@ -866,7 +943,37 @@ camd_eia_crosswalk <- camd_eia_gen_crosswalk %>%
   ) %>%
   arrange(CAMD_PLANT_ID, CAMD_UNIT_ID, CAMD_GENERATOR_ID)
 
+analysis_years <- c(earliest_retirement_year:current_year)
+camd_eia_crosswalk_by_year <- camd_eia_crosswalk %>%
+  left_join(analysis_years, by = character(), copy=TRUE) %>% rename(capacity_year = y) %>%
+  mutate(
+    CAMD_STATUS_YEAR = year(CAMD_STATUS_DATE),
+    CAMD_REPORT = ifelse(CAMD_STATUS=="OPR",capacity_year>=CAMD_STATUS_YEAR,capacity_year<=CAMD_STATUS_YEAR)
+  ) %>% filter(CAMD_REPORT)
+
+camd_eia_crosswalk_by_year <- camd_eia_crosswalk_by_year %>%
+  group_by(EIA_PLANT_ID,EIA_GENERATOR_ID,capacity_year) %>%
+  mutate(
+    capacity_in_year = case_when(
+      (EIA_RETIRE_YEAR==0 | EIA_RETIRE_YEAR > capacity_year) & EIA_OPERATING_YEAR < capacity_year ~ EIA_NAMEPLATE_CAPACITY,
+      EIA_OPERATING_YEAR == capacity_year ~ EIA_NAMEPLATE_CAPACITY * (1 - (EIA_OPERATING_MONTH-0.5)/12),
+      EIA_RETIRE_YEAR == capacity_year ~ EIA_NAMEPLATE_CAPACITY * (EIA_RETIRE_MONTH-0.5)/12,
+      TRUE ~ 0
+    ),
+    sum_capacity_in_year = sum(capacity_in_year),
+    normalized_capacity_in_year = ifelse(sum_capacity_in_year>0,capacity_in_year^2 / sum_capacity_in_year,0)
+  ) %>%
+  ungroup() %>%
+  group_by(CAMD_PLANT_ID,CAMD_UNIT_ID,capacity_year) %>%
+  mutate(
+    sum_normalized_capacity_in_year = sum(normalized_capacity_in_year),
+    camd_unit_to_ei_gen_allocation_factor = 
+      ifelse(sum_normalized_capacity_in_year>0,normalized_capacity_in_year / sum_normalized_capacity_in_year,0)
+  ) %>% ungroup()
+
 camd_eia_crosswalk
+write.csv(camd_eia_crosswalk,"data/camd_eia_crosswalk.csv")
+write_parquet(camd_eia_crosswalk_by_year,"data/camd_eia_crosswalk_by_year.parquet")
 ```
 
 
@@ -892,6 +999,7 @@ camd_eia_crosswalk <- camd_eia_crosswalk %>%
 camd_unmatched
 eia_gen_unmatched
 eia_boiler_unmatched
+write.csv(camd_unmatched,"data/camd_unmatched.csv")
 ```
 
 ### Match Summary
