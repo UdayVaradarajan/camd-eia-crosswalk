@@ -967,7 +967,7 @@ camd_eia_crosswalk_by_year <- camd_eia_crosswalk_by_year %>%
   group_by(CAMD_PLANT_ID,CAMD_UNIT_ID,capacity_year) %>%
   mutate(
     sum_normalized_capacity_in_year = sum(normalized_capacity_in_year),
-    camd_unit_to_ei_gen_allocation_factor = 
+    camd_unit_to_eia_gen_allocation_factor = 
       ifelse(sum_normalized_capacity_in_year>0,normalized_capacity_in_year / sum_normalized_capacity_in_year,0)
   ) %>% ungroup()
 
