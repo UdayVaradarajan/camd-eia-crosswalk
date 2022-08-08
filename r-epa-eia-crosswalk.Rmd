@@ -96,11 +96,11 @@ library(broom)
 api_key <- "2B5IYc5NberaV02XHqMY0rJQg3Gh8C4miHNk7r04"
 eia_860_Early_Release <- "Yes" # Input "Yes" if early release EIA-860 data should be used
 eia_860_year_num <- 2021 # The EIA data year in numeric format (data available at https://www.eia.gov/electricity/data/eia860/)
-earliest_retirement_year <- 2008 # All units retired before this year are filtered out of the data
+earliest_retirement_year <- 2004 # All units retired before this year are filtered out of the data
 current_EIA_860M_month <- "june" # Most recent month in lower-case used to pull EIA-860M
 current_year <- 2022 # Current year used to pull EIA-860
-refresh_CAMD_data <- "Yes" # Input "Yes" here if CAMD data should be downloaded and refreshed, "No" if data has already been downloaded
-refresh_EIA_data <- "Yes" # Input "Yes" here if EIA data should be downloaded and refreshed, "No" if data has already been downloaded
+refresh_CAMD_data <- "No" # Input "Yes" here if CAMD data should be downloaded and refreshed, "No" if data has already been downloaded
+refresh_EIA_data <- "No" # Input "Yes" here if EIA data should be downloaded and refreshed, "No" if data has already been downloaded
 
 eia_860_year_file_name <- paste(eia_860_year_num,ifelse(eia_860_Early_Release=="Yes","ER",""),sep="") # The EIA data year for the 860 data zip file
 eia_860_year <- paste(eia_860_year_num,ifelse(eia_860_Early_Release=="Yes","Early_Release",""),sep="_") # The EIA data year used in ER files
@@ -230,7 +230,156 @@ if(refresh_EIA_data == "Yes") {
   )
   unzip(zipfile = str_glue("data/eia860{eia_860_year_file_name}.zip"), exdir = "data")
   download.file(eia_860m_data_file,"data/eia860m.xlsx")
+  for (eia_year in earliest_retirement_year:eia_860_year_num) {
+    if (eia_year<eia_860_year_num) {
+      if (eia_year == eia_860_year_num-1 & eia_860_Early_Release == "Yes") {
+        eia_data_file_hist <- str_glue("https://www.eia.gov/electricity/data/eia860/xls/eia860{eia_year}.zip")
+      } else {
+        eia_data_file_hist <- str_glue("https://www.eia.gov/electricity/data/eia860/archive/xls/eia860{eia_year}.zip")
+      }
+    }
+    download.file(eia_data_file_hist,str_glue("data/eia860{eia_year}.zip"))
+  }
 }
+
+# Extract raw historic EIA-860 operating and retired generator data and create composite historic data frame
+
+for (eia_year in earliest_retirement_year:eia_860_year_num) {
+  eia_year_two_dig = substring(as.character(eia_year),3,4)
+  eia_gen_data_file_name = case_when(
+          eia_year<=2008 ~ str_glue("GenY{eia_year_two_dig}.xls"),
+          eia_year==2009 ~ str_glue("GeneratorY{eia_year_two_dig}.xls"),
+          eia_year==2010 ~ str_glue("GeneratorsY{eia_year}.xls"),
+          eia_year>=2011 & eia_year<=2012 ~ str_glue("GeneratorY{eia_year}.xlsx"),
+          eia_year==eia_860_year_num & eia_860_Early_Release=="Yes" ~ str_glue("3_1_Generator_Y{eia_860_year}.xlsx"),
+          TRUE ~ str_glue("3_1_Generator_Y{eia_year}.xlsx"))
+  if (eia_year<eia_860_year_num & refresh_EIA_data == "Yes") {
+    unzip(zipfile = str_glue("data/eia860{eia_year}.zip"), 
+          files = c(eia_gen_data_file_name), 
+          exdir = "data")
+  }
+  eia_gen_data_file_name = str_glue("data/{eia_gen_data_file_name}")
+  sheet_name = case_when(
+    eia_year>2011 ~ str_glue("Operable"),
+    eia_year==2011 ~ str_glue("operable"),
+    (eia_year < 2011) & (eia_year > 2008) ~ str_glue("Exist"),
+    TRUE ~ str_glue("GenY{eia_year_two_dig}")    
+  )
+  sheet_name_ret = case_when(
+    eia_year>2011 ~ str_glue("Retired and Canceled"),
+    eia_year==2011 ~ str_glue("retired & canceled"),
+    (eia_year < 2011) & (eia_year > 2008) ~ str_glue("Ret_IP"),
+    TRUE ~ str_glue("GenY{eia_year_two_dig}")
+  )
+  skip_num = case_when(
+        eia_year==eia_860_year_num & eia_860_Early_Release=="Yes" ~ 2,
+        eia_year>2010 ~ 1,
+        TRUE ~ 0
+        )
+  plant_id_name = case_when(
+          eia_year>=2012 ~ "Plant Code",
+          eia_year>2008 ~ "PLANT_CODE",
+          TRUE ~ "PLNTCODE"
+          )
+  generator_id_name = case_when(
+          eia_year>=2012 ~ "Generator ID",
+          eia_year>2008 ~ "GENERATOR_ID",
+          TRUE ~ "GENCODE"
+          )
+  unit_type_name = case_when(
+          eia_year>=2012 ~ "Prime Mover",
+          eia_year>2008 ~ "PRIME_MOVER",
+          TRUE ~ "PRIMEMOVER"
+          )
+  nameplate_name = case_when(
+          eia_year>=2012 ~ "Nameplate Capacity (MW)",
+          TRUE ~ "NAMEPLATE"
+          )
+  fuel_1_name = case_when(
+          eia_year>=2012 ~ "Energy Source 1",
+          TRUE ~ "ENERGY_SOURCE_1"
+          )
+  fuel_2_name = case_when(
+          eia_year>=2012 ~ "Energy Source 2",
+          TRUE ~ "ENERGY_SOURCE_2"
+          )
+  fuel_3_name = case_when(
+          eia_year>=2012 ~ "Energy Source 3",
+          TRUE ~ "ENERGY_SOURCE_3"
+          )
+  fuel_4_name = case_when(
+          eia_year>=2012 ~ "Energy Source 4",
+          TRUE ~ "ENERGY_SOURCE_4"
+          )
+  fuel_5_name = case_when(
+          eia_year>=2012 ~ "Energy Source 5",
+          TRUE ~ "ENERGY_SOURCE_5"
+          )
+  fuel_6_name = case_when(
+          eia_year>=2012 ~ "Energy Source 6",
+          TRUE ~ "ENERGY_SOURCE_6"
+          )
+  eia_gen_year <- # Operating capacity and fuels for historic year
+    read_excel(
+      eia_gen_data_file_name,
+      sheet = sheet_name,
+      range = cell_cols("C:AP"),
+      skip = skip_num,
+      trim_ws = TRUE,
+      guess_max = 20000
+    ) %>%
+    select(
+        EIA_PLANT_ID = .data[[plant_id_name]],
+        EIA_GENERATOR_ID = .data[[generator_id_name]], 
+        EIA_UNIT_TYPE_HIST = .data[[unit_type_name]], 
+        EIA_NAMEPLATE_CAPACITY_HIST = .data[[nameplate_name]],
+        EIA_FUEL_TYPE_1_HIST = .data[[fuel_1_name]],
+        EIA_FUEL_TYPE_2_HIST = .data[[fuel_2_name]],
+        EIA_FUEL_TYPE_3_HIST = .data[[fuel_3_name]],
+        EIA_FUEL_TYPE_4_HIST = .data[[fuel_4_name]],
+        EIA_FUEL_TYPE_5_HIST = .data[[fuel_5_name]],
+        EIA_FUEL_TYPE_6_HIST = .data[[fuel_6_name]]
+    ) %>%
+    mutate(capacity_year = eia_year)
+  if(eia_year > 2008) {
+    eia_gen_ret_year <- # Operating capacity and fuels for historic year
+      read_excel(
+        eia_gen_data_file_name,
+        sheet = sheet_name_ret,
+        range = cell_cols("C:AP"),
+        skip = skip_num,
+        trim_ws = TRUE,
+        guess_max = 20000
+      ) %>%
+      select(
+          EIA_PLANT_ID = .data[[plant_id_name]],
+          EIA_GENERATOR_ID = .data[[generator_id_name]], 
+          EIA_UNIT_TYPE_HIST = .data[[unit_type_name]], 
+          EIA_NAMEPLATE_CAPACITY_HIST = .data[[nameplate_name]],
+          EIA_FUEL_TYPE_1_HIST = .data[[fuel_1_name]],
+          EIA_FUEL_TYPE_2_HIST = .data[[fuel_2_name]],
+          EIA_FUEL_TYPE_3_HIST = .data[[fuel_3_name]],
+          EIA_FUEL_TYPE_4_HIST = .data[[fuel_4_name]],
+          EIA_FUEL_TYPE_5_HIST = .data[[fuel_5_name]],
+          EIA_FUEL_TYPE_6_HIST = .data[[fuel_6_name]]
+      ) %>%
+      mutate(capacity_year = eia_year)
+  }
+  if (eia_year==earliest_retirement_year) {
+    eia_gen_opr_hist <- eia_gen_year
+  } else {
+    eia_gen_opr_hist <- rbind(eia_gen_opr_hist,eia_gen_year)
+  }
+  if (eia_year>2008) {
+    if ((eia_year==earliest_retirement_year) | (earliest_retirement_year<=2008 & eia_year==2009)) {
+      eia_gen_ret_hist <- eia_gen_ret_year
+    } else {
+      eia_gen_ret_hist <- rbind(eia_gen_ret_hist,eia_gen_ret_year)
+    }
+  }
+}
+eia_gen_hist <- rbind(eia_gen_opr_hist,eia_gen_ret_hist)
+write_parquet(eia_gen_hist,"data/historic_eia_860_gen_essentials.parquet")
 
 # Get plant location data
 eia_plant <-
@@ -949,7 +1098,13 @@ camd_eia_crosswalk_by_year <- camd_eia_crosswalk %>%
   mutate(
     CAMD_STATUS_YEAR = year(CAMD_STATUS_DATE),
     CAMD_REPORT = ifelse(CAMD_STATUS=="OPR",capacity_year>=CAMD_STATUS_YEAR,capacity_year<=CAMD_STATUS_YEAR)
-  ) %>% filter(CAMD_REPORT)
+  ) %>% 
+  filter(CAMD_REPORT) %>%
+  left_join(eia_gen_hist, by = c(
+    "EIA_PLANT_ID" = "EIA_PLANT_ID",
+    "EIA_GENERATOR_ID" = "EIA_GENERATOR_ID",
+    "capacity_year" = "capacity_year"
+  ))
 
 camd_eia_crosswalk_by_year <- camd_eia_crosswalk_by_year %>%
   group_by(EIA_PLANT_ID,EIA_GENERATOR_ID,capacity_year) %>%
