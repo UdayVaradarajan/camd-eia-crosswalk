@@ -286,6 +286,10 @@ for (eia_year in earliest_retirement_year:eia_860_year_num) {
           eia_year>2008 ~ "GENERATOR_ID",
           TRUE ~ "GENCODE"
           )
+  unit_code_name = case_when(
+          eia_year>=2012 ~ "Unit Code",
+          TRUE ~ "UNIT_CODE"
+          )
   unit_type_name = case_when(
           eia_year>=2012 ~ "Prime Mover",
           eia_year>2008 ~ "PRIME_MOVER",
@@ -330,7 +334,8 @@ for (eia_year in earliest_retirement_year:eia_860_year_num) {
     ) %>%
     select(
         EIA_PLANT_ID = .data[[plant_id_name]],
-        EIA_GENERATOR_ID = .data[[generator_id_name]], 
+        EIA_GENERATOR_ID = .data[[generator_id_name]],
+        EIA_UNIT_CODE = .data[[unit_code_name]],
         EIA_UNIT_TYPE_HIST = .data[[unit_type_name]], 
         EIA_NAMEPLATE_CAPACITY_HIST = .data[[nameplate_name]],
         EIA_FUEL_TYPE_1_HIST = .data[[fuel_1_name]],
@@ -354,6 +359,7 @@ for (eia_year in earliest_retirement_year:eia_860_year_num) {
       select(
           EIA_PLANT_ID = .data[[plant_id_name]],
           EIA_GENERATOR_ID = .data[[generator_id_name]], 
+          EIA_UNIT_CODE = .data[[unit_code_name]],
           EIA_UNIT_TYPE_HIST = .data[[unit_type_name]], 
           EIA_NAMEPLATE_CAPACITY_HIST = .data[[nameplate_name]],
           EIA_FUEL_TYPE_1_HIST = .data[[fuel_1_name]],
@@ -487,6 +493,7 @@ eia_generator <- rbind(eia_gen_opr, eia_gen_ret) %>%
     EIA_GENERATOR_ID = "Generator ID",
     MOD_EIA_GENERATOR_ID = "Generator ID",
     #EIA_UNIT_TYPE = "Prime Mover",
+    EIA_UNIT_CODE = "Unit Code",
     EIA_UNIT_TYPE = "Prime Mover Code",
     EIA_NAMEPLATE_CAPACITY = "Nameplate Capacity (MW)",
     #EIA_FUEL_TYPE = "Energy Source 1",
